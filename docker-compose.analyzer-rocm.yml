@@ -1,0 +1,32 @@
+# AMD GPU overlay for the SUB/WAVE analyzer — CLAP + Demucs on ROCm.
+# Mirrors upstream's docker-compose.analyzer-gpu.yml (NVIDIA) in shape.
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.analyzer-rocm.yml   # in .env
+#   docker compose up -d analyzer
+#
+# Host needs the amdgpu kernel driver only; the ROCm userspace is inside the
+# image. ANALYZER_HEAVY is irrelevant while applied — the image is overridden.
+services:
+  analyzer:
+    image: ghcr.io/tfenby/subwave-analyzer-rocm:${SUBWAVE_VERSION:-latest}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      # No defaults: a wrong GID fails silently at first GPU use, so compose
+      # refuses to start until .env sets them (`getent group video render`).
+      - "${VIDEO_GID:?set VIDEO_GID in .env}"
+      - "${RENDER_GID:?set RENDER_GID in .env}"
+    # Cards ROCm does not officially support (e.g. Navi 24 RX 6400/6500 XT,
+    # gfx1034) need to be presented as a supported sibling. Uncomment and set
+    # the value for your card; leave it commented on a supported GPU.
+    # environment:
+    #   - HSA_OVERRIDE_GFX_VERSION=10.3.0
+    volumes:
+      # Whole home, not just ~/.cache: torch-hub (Demucs weights), numba JIT
+      # and the MIOpen compiled-kernel cache live in ~/.cache, but MIOpen's
+      # tuning (perf) DB defaults to ~/.config/miopen. Both are what make the
+      # first GPU pass slow; losing either on recreate repeats it.
+      - analyzer-rocm-home:/home/subwave
+volumes:
+  analyzer-rocm-home:
