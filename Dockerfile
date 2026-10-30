@@ -21,3 +21,6 @@ RUN set -eu; py=/opt/analyzer/venv/bin/python; \
       "torch==${v}+rocm${ROCM}" "torchaudio==${v}+rocm${ROCM}" && \
     $py -c "import torch, torchaudio, demucs, transformers; assert torch.version.hip, torch.__version__"
 USER 10001:10001
+# Links the ghcr package to this repo on push (so it shows under Packages and
+# the publish workflow's GITHUB_TOKEN can write to it).
+LABEL org.opencontainers.image.source=https://github.com/TFenby/subwave-analyzer-rocm
