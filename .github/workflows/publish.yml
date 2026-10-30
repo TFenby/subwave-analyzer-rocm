@@ -41,14 +41,17 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # The 4.5 GB ROCm torch wheel plus a ~7 GB image overflow the runner's
-      # ~14 GB root filesystem; these preinstalled toolchains are unused here.
-      - name: Free runner disk space
+      # The image is ~31 GB unpacked (the ROCm torch wheel alone is 21 GB) and
+      # the runner's root filesystem has ~14 GB free. /mnt is a separate,
+      # mostly empty ~70 GB disk on GitHub-hosted runners, so move Docker's
+      # data root there instead of pruning toolchains from /.
+      - name: Move Docker data root to /mnt
         if: steps.exists.outputs.skip != 'true'
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost /usr/share/swift
-          df -h /
+          sudo systemctl stop docker
+          echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          df -h / /mnt
 
       - uses: docker/setup-buildx-action@v3
         if: steps.exists.outputs.skip != 'true'

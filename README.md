@@ -25,7 +25,9 @@ releases.
 3. `docker compose up -d analyzer`
 
 The host needs only the `amdgpu` kernel driver; the ROCm userspace ships in
-the image (it is large, ~7 GB unpacked).
+the image. It is large: the ROCm torch wheel alone unpacks to 21 GB (10 GB of
+that is hipblaslt kernels for every supported GPU arch), so budget ~31 GB of
+disk for the image versus ~2 GB for upstream's heavy image.
 
 ## Verify
 
