@@ -1,0 +1,23 @@
+# STATION-side overlay for a remote analyzer reached over a Swarm overlay.
+# Only needed for that case: a remote analyzer on a published port, or one
+# on the same host, needs no station compose change at all.
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.station.yml   # station .env
+#   REMOTE_NETWORK=subwave-remote                                # the overlay
+#   ANALYZE_URL=http://sub-wave-analyzer:8080                    # overlay DNS
+#   ANALYZER_REPLICAS=0                                          # drop the local analyzer
+#   ANALYZE_CONCURRENCY=1                                        # same on both hosts
+#
+# The state is NOT shared here. If you want stem caching and stem-blend
+# transitions from the remote analyzer, the station HOST exports three
+# directories over NFS — README "Remote analyzer".
+services:
+  controller:
+    networks:
+      - default
+      - remote
+
+networks:
+  remote:
+    name: ${REMOTE_NETWORK:-subwave-remote}
+    external: true

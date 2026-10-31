@@ -1,14 +1,46 @@
-# AMD GPU overlay for the SUB/WAVE analyzer — CLAP + Demucs on ROCm.
-# Mirrors upstream's docker-compose.analyzer-gpu.yml (NVIDIA) in shape.
+# SUB/WAVE analyzer on AMD ROCm — CLAP + Demucs on the GPU.
+# Drop-in for upstream's subwave-analyzer-heavy. One file, three ways to run it:
 #
-#   COMPOSE_FILE=docker-compose.yml:docker-compose.analyzer-rocm.yml   # in .env
-#   docker compose up -d analyzer
+#  A. SAME HOST as the station: use it as an overlay on upstream's compose.
+#       COMPOSE_FILE=docker-compose.yml:docker-compose.analyzer-rocm.yml  # in .env
+#     Upstream's state/stems mounts and env passthrough merge in; this file adds
+#     the image, the GPU devices and the caches. Nothing below needs uncommenting.
 #
-# Host needs the amdgpu kernel driver only; the ROCm userspace is inside the
-# image. ANALYZER_HEAVY is irrelevant while applied — the image is overridden.
+#  B. REMOTE GPU host, analysis only: run this file on its own there and point
+#     the station at it (ANALYZE_URL, ANALYZER_REPLICAS=0 in the station .env).
+#     Uncomment ONE of the two reachability blocks: `ports` (plain LAN, no other
+#     setup) or `networks` (an attachable Swarm overlay, name resolution, no
+#     published port; the station side then needs docker-compose.station.yml).
+#     The controller stages audio by URL when it cannot hand over a path, so
+#     everything works — except stem caching and stem-blend transitions, which
+#     need shared storage:
+#
+#  C. REMOTE GPU host with stems/blends: B plus the NFS volumes below, served
+#     by the station HOST's nfsd (not a container: that needs SYS_ADMIN and
+#     fights overlayfs). README "Remote analyzer" has the three-line
+#     /etc/exports and the one trap (analyze-tmp must be a mount point).
+#
+# .env on the host running this file:
+#   SUBWAVE_VERSION=latest          # same tag the station runs
+#   VIDEO_GID=44 RENDER_GID=105     # getent group video render
+#   ANALYZE_CONCURRENCY=1           # same value on BOTH hosts; keep 1 on 4 GB
+#   REMOTE_NETWORK=subwave-remote   # B/C with the overlay
+#   NFS_HOST=10.0.0.31              # C: station host, LAN name or IP
+#   NFS_EXPORT_ROOT=/srv/subwave/state      # C: the station's STATE_DIR as exported
+#   NFS_STEMS_EXPORT=/srv/subwave/stems     # C: only if the station sets STEMS_DIR
+#
+# Host needs: amdgpu kernel driver; for C also nfs-utils / nfs-common.
 services:
   analyzer:
     image: ghcr.io/tfenby/subwave-analyzer-rocm:${SUBWAVE_VERSION:-latest}
+    container_name: sub-wave-analyzer
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: ${ANALYZER_MEM_LIMIT:-6g}
     devices:
       - /dev/kfd
       - /dev/dri
@@ -17,16 +49,75 @@ services:
       # refuses to start until .env sets them (`getent group video render`).
       - "${VIDEO_GID:?set VIDEO_GID in .env}"
       - "${RENDER_GID:?set RENDER_GID in .env}"
-    # Cards ROCm does not officially support (e.g. Navi 24 RX 6400/6500 XT,
-    # gfx1034) need to be presented as a supported sibling. Uncomment and set
-    # the value for your card; leave it commented on a supported GPU.
-    # environment:
-    #   - HSA_OVERRIDE_GFX_VERSION=10.3.0
+    # B/C, plain LAN: the station sets ANALYZE_URL=http://<this host>:8080
+    # ports:
+    #   - "8080:8080"
+    # B/C, Swarm overlay: the station sets ANALYZE_URL=http://sub-wave-analyzer:8080
+    # (overlay DNS). `default` stays for egress: model weights download from
+    # huggingface.co on first use, and an overlay alone has no route out.
+    # networks:
+    #   - default
+    #   - remote
+    environment:
+      - ANALYZE_AUDIO_EMBEDDING=${ANALYZE_AUDIO_EMBEDDING:-}
+      - ANALYZE_VOCAL_ACTIVITY=${ANALYZE_VOCAL_ACTIVITY:-}
+      - ANALYZE_DEVICE=${ANALYZE_DEVICE:-}
+      - ANALYZE_IDLE_UNLOAD_S=${ANALYZE_IDLE_UNLOAD_S:-}
+      - ANALYZE_RECYCLE_IDLE_S=${ANALYZE_RECYCLE_IDLE_S:-}
+      - CLAP_MODEL=${CLAP_MODEL:-}
+      - CLAP_MODEL_PATH=${CLAP_MODEL_PATH:-}
+      - DEMUCS_MODEL=${DEMUCS_MODEL:-}
+      - DEMUCS_OVERLAP=${DEMUCS_OVERLAP:-}
+      - ANALYZE_SECONDS=${ANALYZE_SECONDS:-}
+      - ANALYZE_CONCURRENCY=${ANALYZE_CONCURRENCY:-}
+      - ANALYZE_CLAP_WINDOWS=${ANALYZE_CLAP_WINDOWS:-}
+      - ANALYZE_OUTRO_SECONDS=${ANALYZE_OUTRO_SECONDS:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      # Cards ROCm does not officially support (e.g. Navi 24 RX 6400/6500 XT,
+      # gfx1034) need presenting as a supported sibling, or every kernel fails
+      # with "HIP error: invalid device function". Uncomment and set for your
+      # card; leave commented on a supported GPU. README "Unsupported cards".
+      # - HSA_OVERRIDE_GFX_VERSION=10.3.0
     volumes:
+      - analyzer-cache:/opt/analyzer/hf-cache
       # Whole home, not just ~/.cache: torch-hub (Demucs weights), numba JIT
       # and the MIOpen compiled-kernel cache live in ~/.cache, but MIOpen's
-      # tuning (perf) DB defaults to ~/.config/miopen. Both are what make the
-      # first GPU pass slow; losing either on recreate repeats it.
-      - analyzer-rocm-home:/home/subwave
+      # tuning DB defaults to ~/.config/miopen. Both make the first GPU pass
+      # slow; losing either on recreate repeats it.
+      - analyzer-home:/home/subwave
+      # C: the three station paths the analyzer touches, at the exact paths
+      # the controller hands over. Staged audio is read-only.
+      # - analyze-tmp:/var/sub-wave/analyze-tmp:ro
+      # - transitions:/var/sub-wave/transitions
+      # - stems:/var/sub-wave/stems
+
 volumes:
-  analyzer-rocm-home:
+  analyzer-cache:
+  analyzer-home:
+  # C: NFS mounts of the station host's exports. Docker's `nfs` driver mounts
+  # with the host kernel, so NFS_HOST resolves through host DNS and no
+  # capability is added to any container.
+  # analyze-tmp:
+  #   driver_opts:
+  #     type: nfs
+  #     o: addr=${NFS_HOST:?set NFS_HOST in .env},nfsvers=4.2,ro,noatime
+  #     device: ":${NFS_EXPORT_ROOT:?set NFS_EXPORT_ROOT in .env}/analyze-tmp"
+  # transitions:
+  #   driver_opts:
+  #     type: nfs
+  #     o: addr=${NFS_HOST:?set NFS_HOST in .env},nfsvers=4.2,noatime
+  #     device: ":${NFS_EXPORT_ROOT:?set NFS_EXPORT_ROOT in .env}/transitions"
+  # stems:
+  #   driver_opts:
+  #     type: nfs
+  #     o: addr=${NFS_HOST:?set NFS_HOST in .env},nfsvers=4.2,noatime
+  #     device: ":${NFS_STEMS_EXPORT:-${NFS_EXPORT_ROOT:?set NFS_EXPORT_ROOT in .env}/stems}"
+
+# B/C with the overlay: pre-existing attachable Swarm overlay, created by
+# neither compose file, only joined. Give it an explicit --subnet that does
+# not overlap your LAN or any local docker network, or attaching fails with
+# "Pool overlaps with other one on this address space".
+# networks:
+#   remote:
+#     name: ${REMOTE_NETWORK:-subwave-remote}
+#     external: true
