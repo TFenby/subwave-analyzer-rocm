@@ -1,9 +1,11 @@
-# Rebuild on top of upstream's latest release. Daily cron skips when our
-# ghcr already has that version; a manual dispatch always builds.
+# Rebuild on top of upstream's latest release. Hourly cron skips (in ~12 s)
+# when our ghcr already has that version; a manual dispatch always builds.
+# Hourly, not daily: GitHub starts scheduled runs 6-10 h late on this repo,
+# so a daily poll left a new release unbuilt for up to ~34 h.
 name: publish
 on:
   schedule:
-    - cron: "17 6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
